@@ -1,5 +1,3 @@
-## `release_notes.groovy`
-
 **Deterministic release notes generator (no LLM).**
 
 This Groovy script processes the **raw release notes** generated automatically by  
