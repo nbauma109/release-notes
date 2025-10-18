@@ -45,6 +45,7 @@ Pattern bulletPat = ~/(?i)^\s*[-*]\s*([0-9a-f]{7,40}):\s*(.+)$/
 
 // Exclusion patterns
 Pattern mvnReleasePat = ~/(?i)\[maven-release-plugin\]/
+Pattern tychoUpdateVersionPat = ~/(?i)\[update version\]/
 Pattern mergePat      = ~/(?i):\s*Merge(\s|$)/
 
 // ------------------------------ Commit structure ------------------------------
@@ -90,6 +91,7 @@ commitLines.each { line ->
   String msg = m.group(2)
   String lowerAll = (id + ': ' + msg).toLowerCase()
   if (mvnReleasePat.matcher(lowerAll).find()) return
+  if (tychoUpdateVersionPat.matcher(lowerAll).find()) return
   if (mergePat.matcher(lowerAll).find()) return
 
   Commit c = new Commit(id: id, message: msg, fullLine: line, lower: msg.toLowerCase())
@@ -136,17 +138,16 @@ final Set<String> testTokens = loadTestTokens(pomPath)
 // ------------------------------ Classification ------------------------------
 
 // Keyword patterns (lowercased fragments)
-Pattern reFeatures = ~/(add|introduc|implement|support|enabl|feature|new)/
-Pattern reFixes = ~/(fix|bug|issue|regress|correct|hotfix)/
-Pattern reImprove = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
-Pattern reDocs    = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
+Pattern reFeatures   = ~/(add|introduc|implement|support|enabl|feature|new)/
+Pattern reFixes      = ~/(fix|bug|issue|regress|correct|hotfix)/
+Pattern reImprove    = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
+Pattern reDocs       = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
 
 // Dependencies (narrow candidate so we do not capture random “update” text)
-Pattern reDepNarrow  = ~/(?i)(^|\s)(bump|upgrade)\b|update\s+.+\s+from\s+.+\s+to\s+.+|dependabot\[bot]/
-Pattern reTestDep    = ~/(^|[^a-z])(junit|jupiter|testng|mockito|assertj|hamcrest)([^a-z]|$)/
-// Match Maven plugins anywhere (handles jacoco-maven-plugin, etc.)
-Pattern reMvnPlugin  = ~/(\borg\.apache\.maven\.plugins\b|\borg\.codehaus\.mojo\b|-maven-plugin\b)/
-Pattern reGHA        = ~/(actions\/|github[- ]?actions|workflow|workflows|github-script|setup-java|checkout|-action)/
+Pattern reDepNarrow  = ~/(bump|upgrade|update)\s+.+\s+from\s+.+\s+to\s+.+/
+Pattern reTestDep    = ~/(junit|jupiter|testng|mockito|assertj|hamcrest)/
+Pattern reMvnPlugin  = ~/(-maven-plugin|maven-\w+-plugin)/
+Pattern reGHA        = ~/(actions\/|workflow|-action|create-pull-request)/
 
 // Build and misc
 Pattern reYaml       = ~/\.(ya?ml)(\b|$)/
@@ -446,3 +447,4 @@ printList("📚 Documentation",          buckets[Bucket.DOCS])
 
 // Output
 print sb.toString()
+
