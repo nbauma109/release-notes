@@ -204,9 +204,9 @@ def classify = { Commit c ->
 
 // ------------------------------ Dependency merging ------------------------------
 
-// Bump parsers
-Pattern bumpWithVersions = ~/(?i)(bump|upgrade|update)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)\s+from\s+([0-9A-Za-z_.-]+)\s+to\s+([0-9A-Za-z_.-]+)/
-Pattern bumpNoVersions   = ~/(?i)(bump|upgrade)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)/
+// Bump parsers (commit messages are already lowercased)
+Pattern bumpWithVersions = ~/(bump|upgrade|update)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)\s+from\s+([0-9A-Za-z_.-]+)\s+to\s+([0-9A-Za-z_.-]+)/
+Pattern bumpNoVersions   = ~/(bump|upgrade)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)/
 
 // Version comparison: split on non-alnum, compare numeric segments numerically
 int vcmp(String a, String b) {
@@ -230,18 +230,22 @@ int vcmp(String a, String b) {
 String minv(String a, String b) { if (!a) return b; if (!b) return a; vcmp(a,b) <= 0 ? a : b }
 String maxv(String a, String b) { if (!a) return b; if (!b) return a; vcmp(a,b) >= 0 ? a : b }
 
-// Try to parse versions from a PR title (Dependabot style: "Bump X from A to B")
-class ParsedVers { String fromVer; String toVer }
-ParsedVers parseVersionsFromTitle(String title) {
+// Try to parse artifact + versions from a PR title (Dependabot style: "Bump X from A to B")
+class ParsedInfo { String artifact; String fromVer; String toVer }
+ParsedInfo parseArtifactAndVersionsFromTitle(String title) {
   if (title == null) return null
-  def m = (title =~ /(?i)\bfrom\s+([0-9A-Za-z_.-]+)\s+to\s+([0-9A-Za-z_.-]+)\b/)
+  def m = (title =~ /(?i)^\s*bump\s+(.+?)\s+from\s+([0-9A-Za-z_.-]+)\s+to\s+([0-9A-Za-z_.-]+)\s*$/)
   if (m.find()) {
-    return new ParsedVers(fromVer: m.group(1), toVer: m.group(2))
+    return new ParsedInfo(artifact: m.group(1), fromVer: m.group(2), toVer: m.group(3))
+  }
+  def m2 = (title =~ /(?i)\bfrom\s+([0-9A-Za-z_.-]+)\s+to\s+([0-9A-Za-z_.-]+)\b/)
+  if (m2.find()) {
+    return new ParsedInfo(artifact: null, fromVer: m2.group(1), toVer: m2.group(2))
   }
   return null
 }
 
-// Fetch PR title via GitHub API if possible; fallback to HTML <title>/og:title.
+// Fetch PR title via GitHub API if possible; fallback to HTML <title>/og:title>.
 // Accepts PR URL like: https://github.com/owner/repo/pull/123
 String fetchPullRequestTitle(String prUrl) {
   try {
@@ -290,13 +294,13 @@ String fetchPullRequestTitle(String prUrl) {
   return null
 }
 
-// Resolve missing versions by querying any associated PR URLs; first successful wins
-ParsedVers resolveVersionsViaPRs(List<String> prUrls) {
+// Resolve artifact + versions via PR titles; first successful wins
+ParsedInfo resolveFromPRs(List<String> prUrls) {
   if (!prUrls) return null
   for (String u : prUrls) {
     String title = fetchPullRequestTitle(u)
-    ParsedVers pv = parseVersionsFromTitle(title)
-    if (pv != null) return pv
+    ParsedInfo pi = parseArtifactAndVersionsFromTitle(title)
+    if (pi != null) return pi
   }
   return null
 }
@@ -306,16 +310,18 @@ class DepAgg {
   String firstLine  // "<hash>: <message>"
   String fromVer = ''
   String toVer   = ''
-  Set<String> refs = new LinkedHashSet<>() // refs to show
+  Set<String> refs = new LinkedHashSet<>()   // refs to show
   Set<String> prUrls = new LinkedHashSet<>() // urls to query for titles
   List<String> additionalHashes = []
 }
 
-// Collect merges for one dependency bucket (closure to capture regex vars)
+// Collect merges for one dependency bucket (resolve BEFORE grouping)
 def collectDepMerges = { List<Commit> items ->
   Map<String, DepAgg> out = [:]
   items.each { c ->
     String msg = c.lower
+
+    // 1) Try to parse artifact/versions from the commit message itself
     def m = bumpWithVersions.matcher(msg)
     String art = null, from = '', to = ''
     if (m.find()) {
@@ -325,17 +331,32 @@ def collectDepMerges = { List<Commit> items ->
       if (m.find()) {
         art = m.group(2)
       } else if (msg.contains('dependabot[bot]')) {
-        def m2 = (msg =~ /(?i)(bump|upgrade)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)/)
+        def m2 = (msg =~ /(bump|upgrade)\s+([A-Za-z0-9_.:-]+(?:\/[A-Za-z0-9_.:-]+)?)/)
         if (m2.find()) art = m2.group(2)
       }
     }
 
+    // 2) If anything missing, try to resolve from PR titles NOW (pre-merge)
+    if (!(art && from && to)) {
+      ParsedInfo pi = resolveFromPRs(new ArrayList<>(c.prUrls))
+      if (pi != null) {
+        if (!art && pi.artifact) art = pi.artifact
+        if (!from && pi.fromVer) from = pi.fromVer
+        if (!to   && pi.toVer)   to   = pi.toVer
+      }
+    }
+
+    // 3) If we still cannot determine an artifact, we cannot merge → keep raw
     if (!art) {
       String k = "__RAW__::" + (c.id + ": " + c.message)
       if (!out.containsKey(k)) out[k] = new DepAgg(firstHash: c.id, firstLine: (c.id + ": " + c.message))
+      // record refs/urls even for RAW so rendering can still show them
+      c.refs.each   { out[k].refs << it }
+      c.prUrls.each { out[k].prUrls << it }
       return
     }
 
+    // 4) We have an artifact → aggregate on artifact key
     if (!out.containsKey(art)) {
       out[art] = new DepAgg(firstHash: c.id, firstLine: (c.id + ": " + c.message), fromVer: from, toVer: to)
     } else {
@@ -343,9 +364,10 @@ def collectDepMerges = { List<Commit> items ->
       out[art].toVer   = maxv(out[art].toVer,   to)
       if (c.id != out[art].firstHash) out[art].additionalHashes << c.id
     }
-    // Refs and PR URLs for later rendering
-    c.refs.each    { out[art].refs << it }
-    c.prUrls.each  { out[art].prUrls << it }
+
+    // accumulate refs and PR URLs on the artifact aggregate
+    c.refs.each   { out[art].refs << it }
+    c.prUrls.each { out[art].prUrls << it }
   }
   return out
 }
@@ -389,10 +411,13 @@ def printDeps = {
         String fromV = d.fromVer
         String toV   = d.toVer
 
-        // If versions missing, try to resolve via PR titles
+        // As a last resort, try again at render time (should be rare now)
         if (!(fromV && toV)) {
-          ParsedVers pv = resolveVersionsViaPRs(new ArrayList<>(d.prUrls))
-          if (pv != null) { fromV = pv.fromVer; toV = pv.toVer }
+          ParsedInfo pi = resolveFromPRs(new ArrayList<>(d.prUrls))
+          if (pi != null) {
+            if (!fromV && pi.fromVer) fromV = pi.fromVer
+            if (!toV   && pi.toVer)   toV   = pi.toVer
+          }
         }
 
         if (fromV && toV) {
@@ -447,4 +472,3 @@ printList("📚 Documentation",          buckets[Bucket.DOCS])
 
 // Output
 print sb.toString()
-
