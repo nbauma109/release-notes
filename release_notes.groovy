@@ -14,16 +14,25 @@
  *   from the linked pull request URL(s). If still unresolved, it prints the first original line.
  *
  * Icons are added to section headers for readability.
+ *
+ * New:
+ * - Optional second argument: path to pom.xml. If provided, we scan test-scoped dependencies and
+ *   use "groupId:artifactId" and any ${property} version names as Test dependency keywords.
+ *   Example matches in commits: "Bump org.apache.kafka:kafka-clients from ..." OR
+ *   "Bump org.eclipse.jdt.version from ..."
  */
 
 import java.util.regex.Pattern
 import java.net.http.*
 import java.net.*
 import java.time.*
+import groovy.xml.*
 
 // ------------------------------ I/O ------------------------------
 
 String input = args ? new File(args[0]).getText('UTF-8') : System.in.newReader('UTF-8').text
+String pomPath = (args?.length ?: 0) >= 2 ? args[1] : null  // optional
+
 List<String> allLines = input.readLines()
 
 // Slice lines under "## Commits" (if present), else use all lines
@@ -90,13 +99,47 @@ commitLines.each { line ->
   commits << c
 }
 
+// ------------------------------ Optional: load test dependency tokens from POM ------------------------------
+
+/**
+ * Returns a set of lowercase tokens that indicate Test dependencies:
+ * - "groupId:artifactId"
+ * - version property name (without ${...}) if dependency version uses a property
+ */
+Set<String> loadTestTokens(String pomPath) {
+  Set<String> out = new LinkedHashSet<>()
+  if (!pomPath) return out
+  File f = new File(pomPath)
+  if (!f.exists()) return out
+
+  def xml = new XmlSlurper(false, false).parse(f)
+  // Handle default POM structure; ignore namespaces for simplicity.
+  xml.dependencies?.dependency?.each { dep ->
+    String scope = (String) (dep.scope?.text() ?: "")
+    if (scope?.trim()?.equalsIgnoreCase("test")) {
+      String g = (String) (dep.groupId?.text() ?: "")
+      String a = (String) (dep.artifactId?.text() ?: "")
+      String v = (String) (dep.version?.text() ?: "")
+      if (g && a) out << (g + ":" + a).toLowerCase()
+      // if version is a property like ${prop.name}, capture "prop.name"
+      def m = (v =~ /^\s*\$\{\s*([^}]+)\s*}\s*$/)
+      if (m.find()) {
+        out << m.group(1).toLowerCase()
+      }
+    }
+  }
+  return out
+}
+
+final Set<String> testTokens = loadTestTokens(pomPath)
+
 // ------------------------------ Classification ------------------------------
 
-// Keyword patterns (lowercased)
+// Keyword patterns (lowercased fragments)
 Pattern reFeatures = ~/(add|introduc|implement|support|enabl|feature|new)/
 Pattern reFixes = ~/(fix|bug|issue|regress|correct|hotfix)/
 Pattern reImprove = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
-Pattern reDocs       = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
+Pattern reDocs    = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
 
 // Dependencies (narrow candidate so we do not capture random “update” text)
 Pattern reDepNarrow  = ~/(?i)(^|\s)(bump|upgrade)\b|update\s+.+\s+from\s+.+\s+to\s+.+|dependabot\[bot]/
@@ -117,6 +160,19 @@ enum Bucket {
   CHORES, BUILD_YAML, BUILD_SCRIPTS, BUILD_CORE, DOCS
 }
 
+// Helper: does message contain a bump of one of the POM test tokens?
+boolean containsPomTestBump(String msgLower, Set<String> tokens) {
+  if (!tokens || tokens.isEmpty()) return false
+  for (String t : tokens) {
+    // We only mark as test dep if we see a bump/upgrade/update of that exact token followed by " from"
+    // This matches both "groupId:artifactId" and a property name like "org.eclipse.jdt.version".
+    if (msgLower.contains("bump " + t + " from")) return true
+    if (msgLower.contains("upgrade " + t + " from")) return true
+    if (msgLower.contains("update " + t + " from")) return true
+  }
+  return false
+}
+
 // Make classify a closure so it can capture the regex variables above
 def classify = { Commit c ->
   def msg = c.lower
@@ -127,6 +183,9 @@ def classify = { Commit c ->
 
   // Dependencies (narrow candidate)
   if (reDepNarrow.matcher(msg).find()) {
+    // First: if POM is provided, prefer its test dependency tokens
+    if (containsPomTestBump(msg, testTokens)) return Bucket.DEP_TEST
+    // Otherwise: generic test libs
     if (reTestDep.matcher(msg).find())   return Bucket.DEP_TEST
     if (reMvnPlugin.matcher(msg).find()) return Bucket.DEP_MVN
     if (reGHA.matcher(msg).find())       return Bucket.DEP_GHA
