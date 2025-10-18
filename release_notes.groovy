@@ -144,7 +144,7 @@ Pattern reImprove    = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
 Pattern reDocs       = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
 
 // Dependencies (narrow candidate so we do not capture random “update” text)
-Pattern reDepNarrow  = ~/(bump|upgrade|update)\s+.+\s+from\s+.+\s+to\s+.+/
+Pattern reDepNarrow  = ~/\b(bump|upgrade)\b|dependabot\[bot]/
 Pattern reTestDep    = ~/(junit|jupiter|testng|mockito|assertj|hamcrest)/
 Pattern reMvnPlugin  = ~/(-maven-plugin|maven-\w+-plugin)/
 Pattern reGHA        = ~/(actions\/|workflow|-action|create-pull-request)/
