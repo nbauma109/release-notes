@@ -141,7 +141,7 @@ final Set<String> testTokens = loadTestTokens(pomPath)
 Pattern reFeatures   = ~/(add|introduc|implement|support|enabl|feature|new)/
 Pattern reFixes      = ~/(fix|bug|issue|regress|correct|hotfix)/
 Pattern reImprove    = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
-Pattern reDocs       = ~/(^|[^a-z])(readme|docs?|documentation|changelog|javadoc)([^a-z]|$)/
+Pattern reDocs       = ~/(readme|docs?|documentation|changelog|javadoc)/
 
 // Dependencies (narrow candidate so we do not capture random “update” text)
 Pattern reDepNarrow  = ~/\b(bump|upgrade)\b|dependabot\[bot]/
@@ -193,10 +193,10 @@ def classify = { Commit c ->
     return Bucket.DEP_RT
   }
 
+  if (reDocs.matcher(msg).find())       return Bucket.DOCS
   if (reFeatures.matcher(msg).find())   return Bucket.FEATURES
   if (reFixes.matcher(msg).find())      return Bucket.FIXES
   if (reImprove.matcher(msg).find())    return Bucket.IMPROVEMENTS
-  if (reDocs.matcher(msg).find())       return Bucket.DOCS
   if (reBuildCore.matcher(msg).find())  return Bucket.BUILD_CORE
 
   return Bucket.CHORES
@@ -472,3 +472,4 @@ printList("📚 Documentation",          buckets[Bucket.DOCS])
 
 // Output
 print sb.toString()
+
