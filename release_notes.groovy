@@ -377,6 +377,50 @@ def collectDepMerges = { List<Commit> items ->
 Map<Bucket, List<Commit>> buckets = [:].withDefault { [] }
 commits.each { c -> buckets[classify(c)] << c }
 
+// ------------------------------ Ref normalization (dedupe PR links) -----------
+
+/**
+ * Normalize a set of reference tokens by:
+ * - Preferring a single markdown PR link [#N](url) over a bare "(#N)".
+ * - Removing hash-only parentheticals like "(abc1234)" because hashes are shown elsewhere.
+ * - Preserving input order for the first appearance of each PR number.
+ */
+List<String> normalizeRefs(Set<String> rawRefs) {
+  if (!rawRefs || rawRefs.isEmpty()) return Collections.emptyList()
+
+  Map<String,String> prNumToLink = new LinkedHashMap<>() // PR number -> chosen token
+  List<String> other = [] // any other refs we still want to keep (currently none)
+
+  rawRefs.each { tok ->
+    // Drop "(abcdef1)" short-hash parentheticals
+    if (tok ==~ /\([0-9a-fA-F]{7,40}\)/) {
+      return // skip
+    }
+    // Prefer [#123](url) over (#123)
+    def link = (tok =~ /\[#([0-9]+)\]\([^)]+\)/)
+    if (link.matches()) {
+      String num = link.group(1)
+      // overwrite any earlier bare "(#num)" with the link
+      prNumToLink.put(num, tok)
+      return
+    }
+    def bare = (tok =~ /\(#([0-9]+)\)/)
+    if (bare.matches()) {
+      String num = bare.group(1)
+      // only set if we do not have a link yet
+      prNumToLink.putIfAbsent(num, tok)
+      return
+    }
+    // keep unknown tokens if ever appear (none expected)
+    other << tok
+  }
+
+  List<String> out = []
+  out.addAll(prNumToLink.values())
+  out.addAll(other)
+  return out
+}
+
 // ------------------------------ Rendering ------------------------------
 
 StringBuilder sb = new StringBuilder()
@@ -406,7 +450,13 @@ def printDeps = {
     agg.keySet().sort { it.toLowerCase() }.each { key ->
       DepAgg d = agg[key]
       if (key.startsWith("__RAW__::")) {
-        sb << "- ${d.firstLine}\n"
+        // For raw lines, also normalize refs inline just in case
+        List<String> refsClean = normalizeRefs(d.refs)
+        if (refsClean) {
+          sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
+        } else {
+          sb << "- ${d.firstLine}\n"
+        }
       } else {
         String fromV = d.fromVer
         String toV   = d.toVer
@@ -423,11 +473,17 @@ def printDeps = {
         if (fromV && toV) {
           String extra = ""
           if (d.additionalHashes) extra += "  (also: ${d.additionalHashes.join(' ')})"
-          if (d.refs)             extra += "  ${d.refs.join(' ')}"
+          List<String> refsClean = normalizeRefs(d.refs)
+          if (!refsClean.isEmpty()) extra += "  " + refsClean.join(' ')
           sb << "- ${d.firstHash}: Bump ${key} from ${fromV} to ${toV}${extra}\n"
         } else {
-          // Still unresolved → keep first line exactly (no rephrasing)
-          sb << "- ${d.firstLine}\n"
+          // Still unresolved → keep first line exactly (no rephrasing), but clean refs
+          List<String> refsClean = normalizeRefs(d.refs)
+          if (refsClean) {
+            sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
+          } else {
+            sb << "- ${d.firstLine}\n"
+          }
         }
       }
     }
@@ -472,4 +528,3 @@ printList("📚 Documentation",          buckets[Bucket.DOCS])
 
 // Output
 print sb.toString()
-
