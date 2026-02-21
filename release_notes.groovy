@@ -403,24 +403,29 @@ List<String> normalizeRefs(Set<String> rawRefs) {
   if (!rawRefs || rawRefs.isEmpty()) return Collections.emptyList()
 
   Map<String,String> prNumToLink = new LinkedHashMap<>() // PR number -> chosen token
-  List<String> other = []
+  List<String> other = [] // any other refs we still want to keep (currently none)
 
   rawRefs.each { tok ->
+    // Drop "(abcdef1)" short-hash parentheticals
     if (tok ==~ /\([0-9a-fA-F]{7,40}\)/) {
-      return
+      return // skip
     }
+    // Prefer [#123](url) over (#123)
     def link = (tok =~ /\[#([0-9]+)\]\([^)]+\)/)
     if (link.matches()) {
       String num = link.group(1)
+      // overwrite any earlier bare "(#num)" with the link
       prNumToLink.put(num, tok)
       return
     }
     def bare = (tok =~ /\(#([0-9]+)\)/)
     if (bare.matches()) {
       String num = bare.group(1)
+      // only set if we do not have a link yet
       prNumToLink.putIfAbsent(num, tok)
       return
     }
+    // keep unknown tokens if ever appear (none expected)
     other << tok
   }
 
@@ -434,6 +439,7 @@ List<String> normalizeRefs(Set<String> rawRefs) {
 
 StringBuilder sb = new StringBuilder()
 
+// Utilities
 def printList = { String header, List<Commit> list ->
   if (!list) return
   sb << "## ${header}\n"
@@ -458,6 +464,7 @@ def printDeps = {
     agg.keySet().sort { it.toLowerCase() }.each { key ->
       DepAgg d = agg[key]
       if (key.startsWith("__RAW__::")) {
+        // For raw lines, also normalize refs inline just in case
         List<String> refsClean = normalizeRefs(d.refs)
         if (refsClean) {
           sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
@@ -468,6 +475,7 @@ def printDeps = {
         String fromV = d.fromVer
         String toV   = d.toVer
 
+        // As a last resort, try again at render time (should be rare now)
         if (!(fromV && toV)) {
           ParsedInfo pi = resolveFromPRs(new ArrayList<>(d.prUrls))
           if (pi != null) {
@@ -483,6 +491,7 @@ def printDeps = {
           if (!refsClean.isEmpty()) extra += "  " + refsClean.join(' ')
           sb << "- ${d.firstHash}: Bump ${key} from ${fromV} to ${toV}${extra}\n"
         } else {
+          // Still unresolved → keep first line exactly (no rephrasing), but clean refs
           List<String> refsClean = normalizeRefs(d.refs)
           if (refsClean) {
             sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
@@ -501,12 +510,14 @@ def printDeps = {
   renderSub("🪄 Github actions & workflow", gha)
 }
 
+// Sections in required order (icons only)
 printList("✨ Features & highlights", buckets[Bucket.FEATURES])
 printList("🐞 Bug fixes",              buckets[Bucket.FIXES])
 printList("🧩 Improvements",           buckets[Bucket.IMPROVEMENTS])
 printDeps()
 printList("🧹 Chores & Maintenance",   buckets[Bucket.CHORES])
 
+// Build & Packaging with subsections
 List<Commit> buildCore    = buckets[Bucket.BUILD_CORE]
 List<Commit> buildYaml    = buckets[Bucket.BUILD_YAML]
 List<Commit> buildScripts = buckets[Bucket.BUILD_SCRIPTS]
@@ -526,6 +537,8 @@ if (buildCore || buildYaml || buildScripts) {
   }
 }
 
+// Documentation
 printList("📚 Documentation",          buckets[Bucket.DOCS])
 
+// Output
 print sb.toString()
