@@ -141,7 +141,13 @@ final Set<String> testTokens = loadTestTokens(pomPath)
 Pattern reFeatures   = ~/(add|introduc|implement|support|enabl|feature|new)/
 Pattern reFixes      = ~/(fix|bug|issue|regress|correct|hotfix)/
 Pattern reImprove    = ~/(improv|enhanc|optim|tweak|adjust|fine[-\s]?tun)/
-Pattern reDocs       = ~/(readme|docs?|documentation|changelog|javadoc)/
+
+// Strengthened topic matchers (to avoid “add/new …” false positives)
+Pattern reDocs       = ~/(readme|doc|docs|documentation|changelog|javadoc|comment|license|notice|contributing|code[_-]?of[_-]?conduct)/
+Pattern reTests      = ~/(test|tests|testing|surefire|failsafe)/
+Pattern reCiMeta     = ~/(ci|pipeline|workflow|workflows|github[-\s]?actions|actions\/|codeql|codecov|dependabot|renovate|jitpack|jitci)/
+Pattern reConfigMeta = ~/(\.gitignore|\.gitattributes|\.editorconfig)/
+Pattern rePermissions = ~/(chmod|permission|permissions)/
 
 // Dependencies (narrow candidate so we do not capture random “update” text)
 Pattern reDepNarrow  = ~/\b(bump|upgrade)\b|dependabot\[bot]/
@@ -178,9 +184,13 @@ boolean containsPomTestBump(String msgLower, Set<String> tokens) {
 def classify = { Commit c ->
   def msg = c.lower
 
+  // Strong “meta” signals first
+  if (reConfigMeta.matcher(msg).find())     return Bucket.CHORES
+  if (rePermissions.matcher(msg).find())    return Bucket.CHORES
+
   // Build precedence first for YAML/Scripts to avoid overlap
-  if (reYaml.matcher(msg).find())     return Bucket.BUILD_YAML
-  if (reScripts.matcher(msg).find())  return Bucket.BUILD_SCRIPTS
+  if (reYaml.matcher(msg).find())           return Bucket.BUILD_YAML
+  if (reScripts.matcher(msg).find())        return Bucket.BUILD_SCRIPTS
 
   // Dependencies (narrow candidate)
   if (reDepNarrow.matcher(msg).find()) {
@@ -193,10 +203,14 @@ def classify = { Commit c ->
     return Bucket.DEP_RT
   }
 
+  // Avoid “add/new …” pitfalls by routing topic-specific commits before Features
   if (reDocs.matcher(msg).find())       return Bucket.DOCS
-  if (reFeatures.matcher(msg).find())   return Bucket.FEATURES
+  if (reTests.matcher(msg).find())      return Bucket.IMPROVEMENTS
+  if (reCiMeta.matcher(msg).find())     return Bucket.BUILD_CORE
+
   if (reFixes.matcher(msg).find())      return Bucket.FIXES
   if (reImprove.matcher(msg).find())    return Bucket.IMPROVEMENTS
+  if (reFeatures.matcher(msg).find())   return Bucket.FEATURES
   if (reBuildCore.matcher(msg).find())  return Bucket.BUILD_CORE
 
   return Bucket.CHORES
@@ -389,29 +403,24 @@ List<String> normalizeRefs(Set<String> rawRefs) {
   if (!rawRefs || rawRefs.isEmpty()) return Collections.emptyList()
 
   Map<String,String> prNumToLink = new LinkedHashMap<>() // PR number -> chosen token
-  List<String> other = [] // any other refs we still want to keep (currently none)
+  List<String> other = []
 
   rawRefs.each { tok ->
-    // Drop "(abcdef1)" short-hash parentheticals
     if (tok ==~ /\([0-9a-fA-F]{7,40}\)/) {
-      return // skip
+      return
     }
-    // Prefer [#123](url) over (#123)
     def link = (tok =~ /\[#([0-9]+)\]\([^)]+\)/)
     if (link.matches()) {
       String num = link.group(1)
-      // overwrite any earlier bare "(#num)" with the link
       prNumToLink.put(num, tok)
       return
     }
     def bare = (tok =~ /\(#([0-9]+)\)/)
     if (bare.matches()) {
       String num = bare.group(1)
-      // only set if we do not have a link yet
       prNumToLink.putIfAbsent(num, tok)
       return
     }
-    // keep unknown tokens if ever appear (none expected)
     other << tok
   }
 
@@ -425,7 +434,6 @@ List<String> normalizeRefs(Set<String> rawRefs) {
 
 StringBuilder sb = new StringBuilder()
 
-// Utilities
 def printList = { String header, List<Commit> list ->
   if (!list) return
   sb << "## ${header}\n"
@@ -450,7 +458,6 @@ def printDeps = {
     agg.keySet().sort { it.toLowerCase() }.each { key ->
       DepAgg d = agg[key]
       if (key.startsWith("__RAW__::")) {
-        // For raw lines, also normalize refs inline just in case
         List<String> refsClean = normalizeRefs(d.refs)
         if (refsClean) {
           sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
@@ -461,7 +468,6 @@ def printDeps = {
         String fromV = d.fromVer
         String toV   = d.toVer
 
-        // As a last resort, try again at render time (should be rare now)
         if (!(fromV && toV)) {
           ParsedInfo pi = resolveFromPRs(new ArrayList<>(d.prUrls))
           if (pi != null) {
@@ -477,7 +483,6 @@ def printDeps = {
           if (!refsClean.isEmpty()) extra += "  " + refsClean.join(' ')
           sb << "- ${d.firstHash}: Bump ${key} from ${fromV} to ${toV}${extra}\n"
         } else {
-          // Still unresolved → keep first line exactly (no rephrasing), but clean refs
           List<String> refsClean = normalizeRefs(d.refs)
           if (refsClean) {
             sb << "- ${d.firstLine}  ${refsClean.join(' ')}\n"
@@ -496,14 +501,12 @@ def printDeps = {
   renderSub("🪄 Github actions & workflow", gha)
 }
 
-// Sections in required order (icons only)
 printList("✨ Features & highlights", buckets[Bucket.FEATURES])
 printList("🐞 Bug fixes",              buckets[Bucket.FIXES])
 printList("🧩 Improvements",           buckets[Bucket.IMPROVEMENTS])
 printDeps()
 printList("🧹 Chores & Maintenance",   buckets[Bucket.CHORES])
 
-// Build & Packaging with subsections
 List<Commit> buildCore    = buckets[Bucket.BUILD_CORE]
 List<Commit> buildYaml    = buckets[Bucket.BUILD_YAML]
 List<Commit> buildScripts = buckets[Bucket.BUILD_SCRIPTS]
@@ -523,8 +526,6 @@ if (buildCore || buildYaml || buildScripts) {
   }
 }
 
-// Documentation
 printList("📚 Documentation",          buckets[Bucket.DOCS])
 
-// Output
 print sb.toString()
