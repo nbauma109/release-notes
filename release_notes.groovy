@@ -2,7 +2,8 @@
  * release_notes.groovy
  *
  * Deterministic release notes generator (no LLM).
- * - Parses "## Commits" bullets with "<hash>: <message>"
+ * - Preserves already categorized sections and their original commit bullets
+ * - Parses only "## Commits" bullets with "<hash>: <message>" for inferred classification
  * - Excludes [maven-release-plugin] and merge commits
  * - Classifies each commit into exactly one bucket:
  *   Features & highlights | Bug fixes | Improvements |
@@ -35,10 +36,35 @@ String pomPath = (args?.length ?: 0) >= 2 ? args[1] : null  // optional
 
 List<String> allLines = input.readLines()
 
-// Slice lines under "## Commits" (if present), else use all lines
-int startIdx = allLines.findIndexOf { it.trim().toLowerCase().startsWith('## commits') }
-List<String> commitLines = (startIdx >= 0 ? allLines.subList(startIdx + 1, allLines.size()) : allLines)
-  .findAll { it.trim().startsWith('-') || it.trim().startsWith('*') }
+// Preserve upstream categories; infer categories only for bullets under "## Commits".
+List<String> commitLines = []
+List<List<String>> categorizedSections = []
+List<String> currentCategorizedSection = null
+boolean inCommitsSection = false
+boolean hasSections = false
+
+allLines.each { line ->
+  def heading = (line =~ /^\s*##\s+(.+?)\s*$/)
+  if (heading.matches()) {
+    hasSections = true
+    inCommitsSection = heading.group(1).trim().equalsIgnoreCase('Commits')
+    if (inCommitsSection) {
+      currentCategorizedSection = null
+    } else {
+      currentCategorizedSection = [line]
+      categorizedSections << currentCategorizedSection
+    }
+  } else if (inCommitsSection) {
+    if (line.trim().startsWith('-') || line.trim().startsWith('*')) commitLines << line
+  } else if (currentCategorizedSection != null) {
+    currentCategorizedSection << line
+  }
+}
+
+// Keep accepting a plain commit list when no sections are present.
+if (!hasSections) {
+  commitLines = allLines.findAll { it.trim().startsWith('-') || it.trim().startsWith('*') }
+}
 
 // Only accept bullets like "- <hash>: <message>"
 Pattern bulletPat = ~/(?i)^\s*[-*]\s*([0-9a-f]{7,40}):\s*(.+)$/
@@ -438,6 +464,13 @@ List<String> normalizeRefs(Set<String> rawRefs) {
 // ------------------------------ Rendering ------------------------------
 
 StringBuilder sb = new StringBuilder()
+
+// Classified commits may not include a hash; retain their original Markdown and category.
+categorizedSections.each { section ->
+  if (section.drop(1).any { it.trim() ==~ /^[-*]\s+\S.*/ }) {
+    sb << section.join('\n').trim() << '\n\n'
+  }
+}
 
 // Utilities
 def printList = { String header, List<Commit> list ->
