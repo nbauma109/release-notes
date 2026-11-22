@@ -8,7 +8,7 @@ and reorganizes them into a structured, human-readable Markdown document.
 
 ### How It Works
 
-The **marvinpinto automatic releases** GitHub Action creates release notes that include a simple list of commits under a `## Commits` section.  
+The **marvinpinto automatic releases** GitHub Action can classify commits by their message prefix under sections such as `## Features`, `## Bug Fixes`, and `## Chores`. Unclassified commits appear under `## Commits`. This script preserves upstream-classified sections and only infers categories for entries under `## Commits`.  
 Each commit line typically follows this format:
 
 ````markdown
@@ -29,7 +29,7 @@ For example:
 
 This script reads that section and deterministically performs the following steps:
 
-1. **Extracts** only the commit bullets found under the `## Commits` section.  
+1. **Preserves** already categorized sections, including their original Markdown bullets (which may not contain a commit hash), and extracts unclassified bullets from `## Commits`.  
 2. **Filters out** commits created by:
    - the *Maven Release Plugin* (`[maven-release-plugin]`)
    - merge commits  
@@ -38,7 +38,7 @@ This script reads that section and deterministically performs the following step
    - message  
    - author  
    - PR references (`(#123)` or `[#123](URL)`)  
-4. **Classifies** each commit into one of the following categories:
+4. **Classifies** only unclassified commits from `## Commits` into one of the following categories:
    - **Features & highlights**  
    - **Bug fixes**  
    - **Improvements**  
@@ -88,7 +88,15 @@ The release notes produced by *marvinpinto/action-automatic-releases* are consis
 they contain a flat list of commit lines without grouping or summarization.
 
 `release_notes.groovy` converts that flat list into a **well-organized, human-friendly changelog**,  
-with logical sections, dependency merging, and consistent Markdown formatting —  
+with preserved upstream categories, inferred categories for unclassified commits, dependency merging, and consistent Markdown formatting —  
 all **without** using any large language model and **without** altering commit content.
 
 The result is **clean, repeatable, and fully automatable**, making it ideal for CI/CD workflows.
+
+### Regression Tests
+
+Run from the repository root with Groovy installed:
+
+```bash
+groovy tests/release_notes_test.groovy
+```
